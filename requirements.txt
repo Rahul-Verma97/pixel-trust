@@ -1,0 +1,10 @@
+numpy
+scipy
+scikit-learn
+opencv-python-headless
+matplotlib
+pillow
+torch
+diffusers>=0.27
+transformers>=4.45
+accelerate
