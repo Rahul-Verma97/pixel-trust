@@ -37,6 +37,23 @@ class SDInpaint:
         else:
             raise RuntimeError(f"no inpainting model could be loaded: {last}")
         self.pipe.set_progress_bar_config(disable=True)
+        # v2: DDIM so every step exposes the predicted clean sample x0 (needed for the
+        # trajectory-variance baseline of Aithal et al., NeurIPS 2024)
+        from diffusers import DDIMScheduler
+        self.pipe.scheduler = DDIMScheduler.from_config(self.pipe.scheduler.config)
+        self._x0, self._recording = [], False
+        orig_step = self.pipe.scheduler.step
+
+        def step(*args, **kwargs):
+            want_dict = kwargs.pop("return_dict", True)
+            out = orig_step(*args, return_dict=True, **kwargs)
+            if self._recording:
+                self._x0.append(out.pred_original_sample.detach().float())
+            return out if want_dict else (out.prev_sample, out.pred_original_sample)
+
+        self.pipe.scheduler.step = step
+        self.last_traj = None
+        self.traj_steps = 10
 
     def __call__(self, warped: np.ndarray, mask: np.ndarray, seeds: list[int], steps: int | None = None):
         from PIL import Image
@@ -44,11 +61,18 @@ class SDInpaint:
         h, w = mask.shape
         gens = [torch.Generator(self.device).manual_seed(int(s)) for s in seeds]
         t0 = time.time()
+        self._x0, self._recording = [], True
         out = self.pipe(prompt=[PROMPT] * len(seeds), negative_prompt=[NEGATIVE] * len(seeds),
                         image=Image.fromarray(warped), mask_image=Image.fromarray((mask * 255).astype(np.uint8)),
                         height=h, width=w, num_inference_steps=steps or self.steps,
                         guidance_scale=self.guidance, generator=gens).images
+        self._recording = False
         dt = time.time() - t0
+        self.last_traj = None
+        if len(self._x0) >= 2:
+            X = torch.stack(self._x0[-self.traj_steps:])          # T x K x 4 x h/8 x w/8
+            v = X[:, 0].var(0).mean(0)                              # sample 0, over steps, mean over channels
+            self.last_traj = cv2.resize(v.cpu().numpy().astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
         samples = [np.asarray(im.resize((w, h))) for im in out]
         return [np.where(mask[..., None], s, warped) for s in samples], dt
 
@@ -56,6 +80,7 @@ class SDInpaint:
 class TeleaInpaint:
     """Classical inpainting plus seed-dependent smooth noise: gives sample-to-sample variability."""
     model_id = "opencv-telea (test stand-in)"
+    last_traj = None
 
     def __call__(self, warped: np.ndarray, mask: np.ndarray, seeds: list[int], steps: int | None = None):
         base = cv2.inpaint(warped, mask.astype(np.uint8), 5, cv2.INPAINT_TELEA).astype(np.float32)
@@ -65,4 +90,6 @@ class TeleaInpaint:
             noise = cv2.GaussianBlur(rng.normal(0, 25, warped.shape).astype(np.float32), (0, 0), 3)
             samp = np.clip(base + noise, 0, 255).astype(np.uint8)
             outs.append(np.where(mask[..., None], samp, warped))
+        rng = np.random.default_rng(seeds[0])
+        self.last_traj = (mask * rng.uniform(0.5, 1.5, mask.shape)).astype(np.float32)  # stand-in signal
         return outs, 0.0

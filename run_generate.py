@@ -32,9 +32,10 @@ def main():
     ap.add_argument("--gen", default="sd", choices=["sd", "telea"])
     ap.add_argument("--depth", default="dav2", choices=["dav2", "oracle"])
     ap.add_argument("--lidar-frac", type=float, default=0.1)
-    ap.add_argument("--regen", default="0.9,0.95,oracle")
+    ap.add_argument("--regen", default="")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--save-png", type=int, default=8)
+    ap.add_argument("--baselines", default="real", choices=["real", "stub", "none"])
     a = ap.parse_args()
 
     root = find_kitti_root([a.root]) or a.root
@@ -58,6 +59,8 @@ def main():
         from pixel_trust.depth import OracleNoisyDepth
         dmodel = OracleNoisyDepth()
 
+    from pixel_trust.baselines import load_baselines
+    baselines = load_baselines(a.baselines, log=lambda m: print(f"[shard {a.shard}] {m}", flush=True))
     log = open(os.path.join(a.out, f"log_shard{a.shard}.jsonl"), "a")
     regen_q = [q for q in a.regen.split(",") if q]
     png_left = a.save_png
@@ -73,7 +76,8 @@ def main():
         split = split_of(idx)
         for cond, dst in (("clean", dst_clean), ("corrupt", dst_corr)):
             rq = regen_q if (cond == "corrupt" and split == "test") else []
-            r = process(pair, preds, lidar, gen, a.k, cond, regen_quantiles=rq)
+            r = process(pair, preds, lidar, gen, a.k, cond, regen_quantiles=rq, baselines=baselines,
+                        log=lambda m: print(f"[shard {a.shard}] {m}", flush=True))
             gt_valid = downsample(pair.disp > 0)
             payload = {f"f_{k}": downsample(v).astype(np.float16) for k, v in r["feats"].items()}
             payload.update(err=downsample(r["err"]).astype(np.float16), mask=downsample(r["mask"]),

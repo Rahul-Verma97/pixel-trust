@@ -15,7 +15,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from pixel_trust import analysis as A
-from pixel_trust.pipeline import GROUPS
+from pixel_trust.pipeline import FEATURES, GROUPS, SOTA
+
+SOTA_NAMES = {"var": "Sample variance (Conffusion / ensembles)",
+              "traj": "Trajectory variance (Aithal et al., NeurIPS'24)",
+              "sem": "Semantic entropy (Bose et al., ICCV'25)",
+              "vggt": "Cross-view confidence (VGGT, OracleGS-style)"}
 
 INK, BLUE, ORANGE, GREY, GREEN = "#1B2A3A", "#2F6690", "#C2571A", "#8C96A0", "#3B7D4F"
 plt.rcParams.update({"font.size": 11, "axes.spines.top": False, "axes.spines.right": False})
@@ -61,6 +66,26 @@ def main():
         R["crc"][cond] = {name: {str(k): v for k, v in A.crc_evaluate(data, cond, fn).items()}
                           for name, fn in methods.items() if name != "warp mask only"}
         R["crc"][cond]["warp mask only (uncalibrated)"] = A.warp_mask_policy(data, cond)
+
+
+    # ---------- v2: comparison against published uncertainty signals ----------
+    sota = A.available(data, SOTA)
+    R["sota_available"] = sota
+    if sota:
+        comp = {SOTA_NAMES[k]: A.scorer(k) for k in sota}
+        comp["Published signals combined (learned)"] = A.scorer("model", A.train_combiner(data, sota), sota)
+        comp["Ours: warp support + variance + depth reliability"] = methods[full]
+        allf = FEATURES + [k for k in sota if k not in FEATURES]
+        comp["Ours + published signals"] = A.scorer("model", A.train_combiner(data, allf), allf)
+        R["sota"] = {}
+        for cond in ("clean", "corrupt"):
+            R["sota"][cond] = {}
+            for name, fn in comp.items():
+                ev = A.evaluate_scores(data, "test", cond, fn)
+                cr = A.crc_evaluate(data, cond, fn, alphas=(0.1,))[0.1]
+                R["sota"][cond][name] = {"auroc": ev["auroc"], "ause": ev["ause"], "coverage": cr["coverage"],
+                                         "miss": cr["miss"], "miss_in_corrupt": cr["miss_in_corrupt"]}
+        print("SOTA comparison:", json.dumps(R["sota"], indent=1)[:3000])
 
     # ---------- Thrust 2: regeneration of unreliable warped pixels ----------
     R["t2_regen"] = A.regen_table(data)
@@ -120,6 +145,23 @@ def main():
     ax.plot(Ks, [R["t3"][k]["auroc_var"] for k in Ks], "o-", color=GREY, label="sample variance only")
     ax.set_xlabel("diffusion samples per view (K)"); ax.set_ylabel("AUROC for wrong pixels"); ax.legend(frameon=False)
     fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "fig_samples.png"), dpi=170); plt.close(fig)
+
+
+    # Fig E: SOTA comparison
+    if R.get("sota"):
+        names = list(R["sota"]["clean"].keys())
+        fig, axes = plt.subplots(1, 2, figsize=(13, 0.62 * len(names) + 1.6))
+        for ax, cond, key, xl in ((axes[0], "clean", "coverage", "view kept as trusted at α=0.10 (higher is better)"),
+                                  (axes[1], "corrupt", "miss_in_corrupt", "wrong pixels trusted in corrupted regions (lower is better)")):
+            vals = [R["sota"][cond][n][key] or 0 for n in names]
+            y = np.arange(len(names))[::-1]
+            cols = [ORANGE if n.startswith("Ours") else BLUE for n in names]
+            ax.barh(y, vals, color=cols)
+            for yi, v, n in zip(y, vals, names):
+                ax.text(v + 0.005, yi, f"{v:.1%}  AUROC {R['sota'][cond][n]['auroc']:.3f}", va="center", fontsize=8)
+            ax.set_yticks(y); ax.set_yticklabels(names if ax is axes[0] else [""] * len(names), fontsize=9)
+            ax.set_xlabel(xl, fontsize=9)
+        fig.tight_layout(); fig.savefig(os.path.join(fig_dir, "fig_sota.png"), dpi=170); plt.close(fig)
 
     # Fig D: qualitative examples
     png_dir = os.path.join(a.out, "png")
@@ -184,6 +226,14 @@ def write_report(R, out):
             for al, r in v.items():
                 mc = "–" if r["miss_in_corrupt"] is None else f"{r['miss_in_corrupt']:.1%}"
                 L.append(f"| {cond} | {name} | {al} | {r['miss']:.3f} | {r['coverage']:.1%} | {r['wrong_among_accepted']:.1%} | {mc} |")
+    if R.get("sota"):
+        L += ["", "## Comparison with published uncertainty signals (test images, conformal risk control at α = 0.10)", "",
+              "| Method | AUROC | AUSE | view kept | miss | AUROC (corrupted) | view kept (corrupted) | wrong trusted in corrupted regions |",
+              "|---|---|---|---|---|---|---|---|"]
+        for n, c in R["sota"]["clean"].items():
+            k = R["sota"]["corrupt"][n]
+            mc = "–" if k["miss_in_corrupt"] is None else f"{k['miss_in_corrupt']:.1%}"
+            L.append(f"| {n} | {c['auroc']:.3f} | {c['ause']:.4f} | {c['coverage']:.1%} | {c['miss']:.3f} | {k['auroc']:.3f} | {k['coverage']:.1%} | {mc} |")
     L += ["", "## Thrust 2: regenerate unreliable warped pixels (corrupted depth, test images)", "",
           "| Policy | mean error (all) | wrong (all) | mean error (corrupted region) | wrong (corrupted region) |",
           "|---|---|---|---|---|"]

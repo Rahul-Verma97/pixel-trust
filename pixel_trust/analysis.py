@@ -28,6 +28,11 @@ def load_all(out_dir: str) -> dict:
     return data
 
 
+def available(data: dict, names: list[str]) -> list[str]:
+    """Features present in every record (baselines can be missing if their model failed to load)."""
+    return [n for n in names if all(f"f_{n}" in d for d in data.values())]
+
+
 def feat_matrix(d: dict, names: list[str], var_key: str = "var") -> np.ndarray:
     cols = [d[f"f_{var_key if n == 'var' else n}"].astype(np.float32).ravel() for n in names]
     return np.stack(cols, 1)

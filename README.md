@@ -15,6 +15,14 @@ A geometry-guided generator warps one camera into another through a depth prior 
 2. **Thrust 2, evidence:** the depth prior is corrupted in a few smooth regions (as vegetation, dust or thin structures would); we compare trust with and without the depth-reliability signal, and regenerating the least reliable warped pixels.
 3. **Thrust 3, compute:** trust quality as a function of the number of diffusion samples.
 
+## v2: comparison with published uncertainty signals
+Every signal below is turned into a per-pixel distrust map on the same generated views and calibrated with the same conformal procedure:
+- **Multi-sample variance**, the sampling/ensemble principle behind Conffusion and BayesDiff.
+- **Trajectory variance** of the predicted clean image over the last 10 DDIM steps (Aithal et al., NeurIPS 2024).
+- **Semantic entropy** of a segmentation network on the generated view (Bose et al., ICCV 2025; SegFormer-B2 Cityscapes instead of LSeg + BLIP-2).
+- **Cross-view geometric confidence**: VGGT (CVPR 2025) run jointly on the real source image and the generated view; low confidence = inconsistent in 3D (the verification idea of OracleGS and ConFixGS).
+Generation uses the DDIM scheduler in v2 so the predicted x0 is available at every step.
+
 ## Run
 On Kaggle (GPU T4 x2, Internet on): import `pixel_trust_kaggle.ipynb` and run all. Locally:
 ```

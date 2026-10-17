@@ -12,6 +12,7 @@ from .depth import build_prior, corrupt_prior
 from .warp import fill_holes_nearest, forward_warp, inpaint_mask
 
 FEATURES = ["inv", "dist", "hits", "edge", "disp", "tex", "var", "ens_std", "lidar_rel"]
+SOTA = ["var", "traj", "sem", "vggt"]   # published signals (see baselines.py)
 GROUPS = {
     "warp support": ["inv", "dist", "hits", "edge", "disp", "tex"],
     "+ sample variance": ["inv", "dist", "hits", "edge", "disp", "tex", "var"],
@@ -56,7 +57,7 @@ def make_features(warp: dict, samples: list[np.ndarray], prior_t: np.ndarray, ma
 
 
 def process(pair, preds_rel: list[np.ndarray], lidar: np.ndarray, generator, K: int, condition: str,
-            regen_quantiles=(), seed_base: int = 1000):
+            regen_quantiles=(), seed_base: int = 1000, baselines: dict | None = None, log=print):
     """Run one image under one depth condition ('clean' or 'corrupt')."""
     P = build_prior(preds_rel, lidar)
     corrupt_src = np.zeros(pair.disp.shape, bool)
@@ -72,6 +73,14 @@ def process(pair, preds_rel: list[np.ndarray], lidar: np.ndarray, generator, K: 
     seeds = [seed_base + pair.idx * 10 + k for k in range(K)]
     samples, dt = generator(warp["img"], mask, seeds)
     feats = make_features(warp, samples, prior, mask)
+    # v2: published baselines, each a per-pixel distrust map on the delivered view (sample 0)
+    if getattr(generator, "last_traj", None) is not None:
+        feats["traj"] = generator.last_traj
+    for key, fn in (baselines or {}).items():
+        try:
+            feats[key] = fn(samples[0], pair.left)
+        except Exception as e:
+            log(f"baseline {key} failed on idx {pair.idx}: {type(e).__name__}: {e}")
     err = per_pixel_error(samples[0], pair.right)
     out = {"feats": feats, "err": err, "mask": mask, "gen_seconds": dt,
            "corrupt_t": warp["w_corrupt"] > 0.5, "warped": warp["img"], "sample0": samples[0]}
