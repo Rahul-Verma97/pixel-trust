@@ -26,8 +26,10 @@ F_PX, BASELINE = 721.5, 0.54
 GW_FILES = {
     ("Sony/genwarp", "multi1"): ["config.json", "denoising_unet.pth", "pose_guider.pth", "reference_unet.pth"],
     ("stabilityai/sd-vae-ft-mse", ""): ["config.json", "diffusion_pytorch_model.safetensors"],
-    ("lambdalabs/sd-image-variations-diffusers", "image_encoder"): ["config.json", "pytorch_model.bin"],
 }
+# GenWarp's image encoder was the CLIP ViT-L/14 vision tower shipped in lambdalabs/sd-image-variations-diffusers
+# (kept frozen there). That repo has since been emptied, so the same weights are taken from OpenAI's release.
+CLIP_ID = "openai/clip-vit-large-patch14"
 
 
 def softmax_splat(frame, flow, metric, eps=1e-6):
@@ -83,13 +85,17 @@ class GenWarpGen:
         if repo_dir not in sys.path:
             sys.path.insert(0, repo_dir)
         for (repo, sub), files in GW_FILES.items():
-            dst = {"Sony/genwarp": "multi1", "stabilityai/sd-vae-ft-mse": "sd-vae-ft-mse"}.get(repo, "image_encoder")
+            dst = {"Sony/genwarp": "multi1", "stabilityai/sd-vae-ft-mse": "sd-vae-ft-mse"}[repo]
             os.makedirs(os.path.join(ckpt_dir, dst), exist_ok=True)
             for fn in files:
                 p = hf_hub_download(repo, f"{sub}/{fn}" if sub else fn)
                 link = os.path.join(ckpt_dir, dst, fn)
                 if not os.path.exists(link):
                     os.symlink(p, link)
+        enc_dir = os.path.join(ckpt_dir, "image_encoder")
+        if not os.path.exists(os.path.join(enc_dir, "config.json")):
+            from transformers import CLIPVisionModelWithProjection
+            CLIPVisionModelWithProjection.from_pretrained(CLIP_ID).save_pretrained(enc_dir)
         from genwarp import GenWarp
         from genwarp import ops
         ops.splatting_function = _splatting_function
