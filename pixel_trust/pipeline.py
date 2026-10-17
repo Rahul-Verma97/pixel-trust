@@ -71,7 +71,10 @@ def process(pair, preds_rel: list[np.ndarray], lidar: np.ndarray, generator, K: 
                                                    "corrupt": corrupt_src.astype(np.float32)})
     mask = inpaint_mask(warp["holes"])
     seeds = [seed_base + pair.idx * 10 + k for k in range(K)]
-    samples, dt = generator(warp["img"], mask, seeds)
+    if getattr(generator, "needs_source", False):   # e.g. GenWarp: regenerates the whole view from source + depth
+        samples, dt = generator(warp["img"], mask, seeds, src=pair.left, disp=prior)
+    else:
+        samples, dt = generator(warp["img"], mask, seeds)
     feats = make_features(warp, samples, prior, mask)
     # v2: published baselines, each a per-pixel distrust map on the delivered view (sample 0)
     if getattr(generator, "last_traj", None) is not None:
@@ -87,7 +90,7 @@ def process(pair, preds_rel: list[np.ndarray], lidar: np.ndarray, generator, K: 
 
     # Thrust 2: regenerate the least reliable warped pixels instead of pasting them
     regen = {}
-    for q in regen_quantiles:
+    for q in (() if getattr(generator, "needs_source", False) else regen_quantiles):
         if q == "oracle":
             extra = out["corrupt_t"] & ~mask
         else:

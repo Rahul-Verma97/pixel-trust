@@ -29,7 +29,7 @@ def main():
     ap.add_argument("--nshards", type=int, default=1)
     ap.add_argument("--k", type=int, default=4)
     ap.add_argument("--steps", type=int, default=25)
-    ap.add_argument("--gen", default="sd", choices=["sd", "telea"])
+    ap.add_argument("--gen", default="sd", choices=["sd", "genwarp", "telea"])
     ap.add_argument("--depth", default="dav2", choices=["dav2", "oracle"])
     ap.add_argument("--lidar-frac", type=float, default=0.1)
     ap.add_argument("--regen", default="")
@@ -46,7 +46,10 @@ def main():
     os.makedirs(os.path.join(a.out, "feats"), exist_ok=True)
     os.makedirs(os.path.join(a.out, "png"), exist_ok=True)
 
-    if a.gen == "sd":
+    if a.gen == "genwarp":
+        from pixel_trust.genwarp_gen import GenWarpGen
+        gen = GenWarpGen(steps=a.steps)
+    elif a.gen == "sd":
         from pixel_trust.generate import SDInpaint
         gen = SDInpaint(steps=a.steps)
     else:

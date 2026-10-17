@@ -55,7 +55,7 @@ class SDInpaint:
         self.last_traj = None
         self.traj_steps = 10
 
-    def __call__(self, warped: np.ndarray, mask: np.ndarray, seeds: list[int], steps: int | None = None):
+    def __call__(self, warped: np.ndarray, mask: np.ndarray, seeds: list[int], steps: int | None = None, **kw):
         from PIL import Image
         torch = self.torch
         h, w = mask.shape
@@ -82,7 +82,7 @@ class TeleaInpaint:
     model_id = "opencv-telea (test stand-in)"
     last_traj = None
 
-    def __call__(self, warped: np.ndarray, mask: np.ndarray, seeds: list[int], steps: int | None = None):
+    def __call__(self, warped: np.ndarray, mask: np.ndarray, seeds: list[int], steps: int | None = None, **kw):
         base = cv2.inpaint(warped, mask.astype(np.uint8), 5, cv2.INPAINT_TELEA).astype(np.float32)
         outs = []
         for s in seeds:

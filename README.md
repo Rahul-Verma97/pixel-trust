@@ -35,3 +35,6 @@ python tests/make_synthetic.py /tmp/syn 20
 python run_generate.py --root /tmp/syn --out /tmp/synout --gen telea --depth oracle
 python run_analysis.py --out /tmp/synout
 ```
+
+## v3: a second, real generator (GenWarp)
+`--gen genwarp` replaces the inpainting stand-in with GenWarp (Seo et al., NeurIPS 2024), which regenerates the whole target view from the source image, the depth prior and the stereo pose (`pixel_trust/genwarp_gen.py`). GenWarp works on 512x512 squares, so each KITTI frame is covered by four overlapping 368x368 crops stitched column-wise. Softmax splatting is reimplemented in plain PyTorch so no CUDA extension has to be compiled. Kaggle notebook: `pixel_trust_kaggle_genwarp.ipynb`.
