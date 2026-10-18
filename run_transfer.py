@@ -77,6 +77,45 @@ def recal_curve(cal_t, test, ns, rng):
     return out
 
 
+BOOT = int(__import__('os').environ.get('PT_BOOT', 500))
+SUB = 4000   # pixels per image used for the bootstrap AUROC
+
+
+def test_groups(data, cond):
+    """Scene id of each test image, in the same order as items() (mirrored pairs share a scene)."""
+    return np.array([i // 2 if str(d.get("dataset", "")) == "middlebury" else i
+                     for (i, c), d in sorted(data.items()) if c == cond and str(d["split"]) == "test"])
+
+
+def bootstrap(per, groups, rng):
+    """95% intervals over test scenes (resampled with replacement) for AUROC, miss and kept,
+    plus the paired AUROC gap between ours and the published combination."""
+    from sklearn.metrics import roc_auc_score
+    ug = np.unique(groups)
+    n_img = len(groups)
+    sel = [rng.choice(len(per[next(iter(per))]["items"][j][0]), SUB, replace=False) for j in range(n_img)]
+    sub = {m: [(v["items"][j][0][sel[j]] > A.EPS, v["items"][j][1][sel[j]]) for j in range(n_img)] for m, v in per.items()}
+    stats = {m: {"auroc": [], "miss": [], "kept": []} for m in per}
+    gap = []
+    for _ in range(BOOT):
+        g = rng.choice(ug, len(ug), replace=True)
+        idx = np.concatenate([np.flatnonzero(groups == x) for x in g])
+        au = {}
+        for m, v in per.items():
+            y = np.concatenate([sub[m][j][0] for j in idx]); sc = np.concatenate([sub[m][j][1] for j in idx])
+            au[m] = roc_auc_score(y, sc) if y.any() and (~y).any() else np.nan
+            stats[m]["auroc"].append(au[m])
+            mi, kp = apply(v["lam"], [v["items"][j] for j in idx])
+            stats[m]["miss"].append(mi); stats[m]["kept"].append(kp)
+        if "Ours (9 signals)" in au and "Published signals combined" in au:
+            gap.append(au["Ours (9 signals)"] - au["Published signals combined"])
+    q = lambda a: [float(np.nanquantile(a, 0.025)), float(np.nanquantile(a, 0.975))]
+    out = {m: {k: q(v) for k, v in st.items()} for m, st in stats.items()}
+    if gap:
+        out["auroc_gap_ours_minus_published"] = {"ci": q(gap), "p_gap_le_0": float(np.mean(np.array(gap) <= 0))}
+    return out
+
+
 def methods_for(src, tgt):
     """Scorers trained on the source and on the target, for features present in both."""
     both = {**src, **tgt}
@@ -101,6 +140,8 @@ def run_pair(label, src_dir, tgt_dir, rng):
     res = {"n_target": {s: sum(1 for (i, c), d in tgt.items() if c == "clean" and str(d["split"]) == s)
                         for s in ("train", "calib", "test")},
            "error_rate": {}, "methods": {}}
+    per = {"clean": {}, "corrupt": {}}
+    per_in = {"clean": {}, "corrupt": {}}
     for name, f in methods_for(src, tgt).items():
         res["methods"][name] = {}
         for cond in ("clean", "corrupt"):
@@ -114,6 +155,8 @@ def run_pair(label, src_dir, tgt_dir, rng):
             lam_zero = A.crc_threshold(cal_src, ALPHA, grid_of(cal_src))
             mi, ci = apply(lam_in, test_tgt_model)
             mz, cz = apply(lam_zero, test_src_model)
+            per[cond][name] = {"items": test_src_model, "lam": lam_zero}
+            per_in[cond][name] = {"items": test_tgt_model, "lam": lam_in}
             ev_in = A.evaluate_scores(tgt, "test", cond, f["tgt"])
             ev_tr = A.evaluate_scores(tgt, "test", cond, f["src"])
             res["methods"][name][cond] = {
@@ -123,6 +166,9 @@ def run_pair(label, src_dir, tgt_dir, rng):
             }
             print(f"[{label}] {name:28s} {cond:7s} in-domain AUROC {ev_in['auroc']:.3f} miss {mi:.3f} kept {ci:.3f} | "
                   f"zero-shot AUROC {ev_tr['auroc']:.3f} miss {mz:.3f} kept {cz:.3f}", flush=True)
+    res["bootstrap_zero_shot"] = {cond: bootstrap(per[cond], test_groups(tgt, cond), rng) for cond in per}
+    res["bootstrap_in_domain"] = {cond: bootstrap(per_in[cond], test_groups(tgt, cond), rng) for cond in per_in}
+    print(f"[{label}] bootstrap:", json.dumps(res["bootstrap_zero_shot"]["clean"])[:1500], flush=True)
     return res
 
 
@@ -174,6 +220,21 @@ def report(R, path):
                   "| n target images | mean miss | 90th pct miss | P(miss > α) | kept |", "|---|---|---|---|---|"]
             for n, v in r["methods"]["Ours (9 signals)"][cond]["recalibrated"].items():
                 L.append(f"| {n} | {v['miss_mean']:.1%} | {v['miss_p90']:.1%} | {v['violation_rate']:.0%} | {v['coverage_mean']:.1%} |")
+            for key, title in (("bootstrap_in_domain", "In-domain (Middlebury-trained and calibrated)"),
+                               ("bootstrap_zero_shot", "Zero-shot (KITTI-trained and calibrated)")):
+              b = r.get(key, {}).get(cond)
+              if b:
+                L += ["", f"{title}, 95% intervals over Middlebury test scenes ({BOOT} resamples):", "",
+                      "| method | AUROC | miss | kept |", "|---|---|---|---|"]
+                for m, v in b.items():
+                    if m.startswith("auroc_gap"):
+                        continue
+                    L.append(f"| {m} | {v['auroc'][0]:.3f}–{v['auroc'][1]:.3f} | {v['miss'][0]:.1%}–{v['miss'][1]:.1%} | "
+                             f"{v['kept'][0]:.1%}–{v['kept'][1]:.1%} |")
+                if "auroc_gap_ours_minus_published" in b:
+                    g = b["auroc_gap_ours_minus_published"]
+                    L.append(f"\nAUROC gap, ours minus published combined: {g['ci'][0]:+.3f} to {g['ci'][1]:+.3f} "
+                             f"(share of resamples with gap <= 0: {g['p_gap_le_0']:.1%})")
             L.append("")
     open(path, "w").write("\n".join(L))
 

@@ -35,7 +35,8 @@ def main():
     data = A.load_all(a.out)
     splits = {s: sum(1 for (i, c), d in data.items() if c == "clean" and str(d["split"]) == s)
               for s in ("train", "calib", "test")}
-    R = {"n_images": splits, "eps": A.EPS}
+    first = next(iter(data.values()))
+    R = {"n_images": splits, "eps": A.EPS, "dataset": str(first["dataset"]) if "dataset" in first else "kitti"}
     print("images per split:", splits)
 
     # ---------- learned combiners (trained on train images, clean + corrupted depth) ----------
@@ -202,7 +203,8 @@ def main():
 
 def write_report(R, out):
     L = ["# pixel-trust: preliminary results", "",
-         f"KITTI Stereo 2015, {sum(R['n_images'].values())} real stereo pairs "
+         f"{ {'kitti': 'KITTI Stereo 2015', 'middlebury': 'Middlebury stereo 2014 + 2021'}.get(R.get('dataset', 'kitti'), R.get('dataset'))}, "
+         f"{sum(R['n_images'].values())} real stereo pairs "
          f"(train {R['n_images']['train']} / calibration {R['n_images']['calib']} / test {R['n_images']['test']}). "
          f"A pixel is *wrong* if its colour error exceeds {R['eps']:.2f}.", "",
          "## Thrust 1: ranking wrong pixels (test images)", "",
