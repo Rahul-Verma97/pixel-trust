@@ -3,8 +3,8 @@
 Unlike the inpainting stand-in, GenWarp regenerates the *whole* target view from the source image,
 its depth and the relative camera pose, so warped pixels can also be altered or hallucinated.
 
-GenWarp works on 512x512 squares. A KITTI frame (368 x 1216) is covered by four overlapping
-368x368 crops (x0 = 0, 283, 565, 848). Each target column is taken from the right-most crop that
+GenWarp works on 512x512 squares. A frame of height 368 is covered by overlapping 368x368 crops
+(for a KITTI frame of width 1216: x0 = 0, 283, 565, 848; see crop_starts). Each target column is taken from the right-most crop that
 contains it, which keeps it away from that crop's right edge (where content leaves the source crop).
 Stereo geometry: the target camera is the source camera translated by the baseline b along +x, so a
 point with disparity d moves d pixels left; depth = f * b / d. Any (f, b) gives the same pixel shift.
@@ -62,10 +62,19 @@ def _splatting_function(kind, frame, flow, metric, eps=1e-6):
     return softmax_splat(frame, flow, metric, eps).to(frame.dtype)
 
 
-def column_owner(width: int = 1216) -> np.ndarray:
+def crop_starts(width: int, step: int = 283) -> tuple[int, ...]:
+    """Evenly spaced crop origins, at most `step` apart, first at 0 and last at width - CROP."""
+    if width <= CROP:
+        return (0,)
+    n = int(np.ceil((width - CROP) / step)) + 1
+    return tuple(int(round(v)) for v in np.linspace(0, width - CROP, n))
+
+
+def column_owner(width: int = 1216, x0s=None) -> np.ndarray:
     """Index of the crop that supplies each output column (right-most crop containing it)."""
+    x0s = x0s or crop_starts(width)
     own = np.zeros(width, int)
-    for k, x0 in enumerate(X0S):
+    for k, x0 in enumerate(x0s):
         own[x0:x0 + CROP] = k
     return own
 
@@ -147,12 +156,13 @@ class GenWarpGen:
     def __call__(self, warped, mask, seeds, steps=None, src=None, disp=None):
         assert src is not None and disp is not None, "GenWarp needs the source image and its disparity"
         H, W = mask.shape
-        assert H == CROP and W == X0S[-1] + CROP, (H, W)
-        own = column_owner(W)
+        assert H == CROP and W >= CROP, (H, W)
+        x0s = crop_starts(W)
+        own = column_owner(W, x0s)
         outs = [np.zeros((H, W, 3), np.uint8) for _ in seeds]
         traj = np.zeros((H, W), np.float32)
         t0 = time.time()
-        for k, x0 in enumerate(X0S):
+        for k, x0 in enumerate(x0s):
             syn, tr = self._crop_call(src[:, x0:x0 + CROP], disp[:, x0:x0 + CROP], seeds)
             cols = np.flatnonzero(own == k)
             for s_out, s in zip(outs, syn):

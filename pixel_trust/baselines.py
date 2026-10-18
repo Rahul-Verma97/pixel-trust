@@ -91,12 +91,13 @@ class RandomStub:
         return (edges + 0.05 * self.rng.random(g.shape)).astype(np.float32)
 
 
-def load_baselines(kind: str, log=print) -> dict:
+def load_baselines(kind: str, seg_model: str | None = None, log=print) -> dict:
     """kind = 'real' (GPU models) or 'stub' (tests). Failures are logged and skipped."""
     out = {}
     if kind == "none":
         return out
-    specs = {"sem": SemanticEntropy, "vggt": VGGTConfidence} if kind == "real" else \
+    sem = (lambda: SemanticEntropy(model=seg_model)) if seg_model else SemanticEntropy
+    specs = {"sem": sem, "vggt": VGGTConfidence} if kind == "real" else \
             {"sem": lambda: RandomStub("sem", 1), "vggt": lambda: RandomStub("vggt", 2)}
     for key, ctor in specs.items():
         try:

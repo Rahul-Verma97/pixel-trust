@@ -77,3 +77,24 @@ def lidar_subset(disp: np.ndarray, frac: float, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     keep = (disp > 0) & (rng.random(disp.shape) < frac)
     return np.where(keep, disp, 0).astype(np.float32)
+
+
+class KittiDataset:
+    name = "kitti"
+    lidar_frac = 0.1
+
+    def __init__(self, root: str):
+        self.root = find_kitti_root([root]) or root
+
+    def indices(self) -> list[int]:
+        return list_indices(self.root)
+
+    def split_of(self, idx: int) -> str:
+        r = idx % 10
+        return "train" if r < 4 else ("calib" if r < 6 else "test")
+
+    def load_pair(self, idx: int) -> Pair:
+        return load_pair(self.root, idx)
+
+    def describe(self, idx: int) -> str:
+        return f"{idx:06d}"
