@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 
-def scene(seed, H=375, W=1242):
+def scene(seed, H=375, W=1242, density=0.3):
     rng = np.random.default_rng(seed)
     tex = lambda: cv2.resize(rng.integers(0, 255, (H // 8, W // 8, 3)).astype(np.uint8), (W, H), interpolation=cv2.INTER_CUBIC)
     bg = tex()
@@ -32,7 +32,7 @@ def scene(seed, H=375, W=1242):
         a, b = max(0, xr0), min(W, xr0 + w)
         if b > a:
             R[y0:y0 + h, a:b] = t[y0:y0 + h, x0 + (a - xr0):x0 + (b - xr0)]
-    gt = np.where(rng.random((H, W)) < 0.3, disp, 0)
+    gt = np.where(rng.random((H, W)) < density, disp, 0)
     return L, R, gt
 
 
