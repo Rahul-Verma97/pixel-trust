@@ -40,10 +40,14 @@ MAX_W = 1216
 LIDAR_FRAC = 0.05   # dense GT -> keep 5% of pixels, a density comparable to 10% of KITTI's LiDAR ground truth
 
 
+FILES = ("im0.png", "im1.png", "disp0.pfm", "disp1.pfm", "calib.txt")
+
+
 def scene_url(name: str) -> str:
+    """2014: one zip per scene. 2021: no per-scene zip; files are served from data/<scene>/."""
     if name in SCENES_2014:
         return f"{BASE}/scenes2014/zip/{name}-perfect.zip"
-    return f"{BASE}/scenes2021/zip/{name}.zip"
+    return f"{BASE}/scenes2021/data/{name}"
 
 
 def read_pfm(path: str) -> np.ndarray:
@@ -96,6 +100,20 @@ def _fetch(name: str, raw: str, log=print) -> str | None:
     if glob.glob(os.path.join(sdir, "**", "im0.png"), recursive=True):
         return sdir
     try:
+        if name not in SCENES_2014:   # 2021: fetch the individual files
+            os.makedirs(sdir, exist_ok=True)
+            for fn in FILES:
+                dst = os.path.join(sdir, fn)
+                if not os.path.exists(dst):
+                    r = subprocess.run(["wget", "-q", "-O", dst + ".part", f"{scene_url(name)}/{fn}"])
+                    if r.returncode != 0:
+                        if os.path.exists(dst + ".part"):
+                            os.remove(dst + ".part")
+                        if fn in ("disp1.pfm", "calib.txt"):
+                            continue
+                        raise RuntimeError(f"download failed: {fn} (wget exit {r.returncode})")
+                    os.replace(dst + ".part", dst)
+            return sdir
         if not os.path.exists(zpath):
             subprocess.run(["wget", "-q", "-O", zpath + ".part", scene_url(name)], check=True)
             os.replace(zpath + ".part", zpath)
