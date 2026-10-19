@@ -156,7 +156,14 @@ class GenWarpGen:
     def __call__(self, warped, mask, seeds, steps=None, src=None, disp=None):
         assert src is not None and disp is not None, "GenWarp needs the source image and its disparity"
         H, W = mask.shape
-        assert H == CROP and W >= CROP, (H, W)
+        assert H == CROP, (H, W)
+        if W < CROP:   # narrow (portrait) frames: pad with edge pixels to one crop, then cut the padding off
+            pad = CROP - W
+            src_p = np.pad(src, ((0, 0), (0, pad), (0, 0)), mode="edge")
+            disp_p = np.pad(disp, ((0, 0), (0, pad)), mode="edge")
+            outs, dt = self(warped, np.zeros((H, CROP), bool), seeds, steps, src=src_p, disp=disp_p)
+            self.last_traj = self.last_traj[:, :W]
+            return [o[:, :W] for o in outs], dt
         x0s = crop_starts(W)
         own = column_owner(W, x0s)
         outs = [np.zeros((H, W, 3), np.uint8) for _ in seeds]
