@@ -116,6 +116,59 @@ def bootstrap(per, groups, rng):
     return out
 
 
+SPLITS = int(__import__('os').environ.get('PT_SPLITS', 200))
+
+
+def scene_units(data, cond, fn):
+    """Calibration units = scenes (the two mirrored pairs of a scene are not independent), over
+    every non-train image. Each unit keeps its sorted wrong-pixel scores, its sorted scores and a
+    small score sample for the threshold grid."""
+    by = {}
+    for (i, c), d in sorted(data.items()):
+        if c != cond or str(d["split"]) == "train":
+            continue
+        g = i // 2 if str(d.get("dataset", "")) == "middlebury" else i
+        e, sc = d["err"].astype(np.float32).ravel(), fn(d)
+        by.setdefault(g, []).append((e, sc))
+    units = []
+    rng = np.random.default_rng(1)
+    for g, lst in sorted(by.items()):
+        e = np.concatenate([x for x, _ in lst]); sc = np.concatenate([y for _, y in lst])
+        units.append({"wrong": np.sort(sc[e > A.EPS]), "all": np.sort(sc),
+                      "sample": sc[rng.choice(len(sc), min(3000, len(sc)), replace=False)]})
+    return units
+
+
+def _unit_miss(u, lam):
+    n = len(u["wrong"])
+    return np.searchsorted(u["wrong"], lam, side="right") / n if n else np.zeros_like(np.atleast_1d(lam), float)
+
+
+def split_eval(units, n_cal, rng, fixed_lam=None):
+    """Random scene-level calibration/test splits. Conformal risk control promises the miss rate
+    is <= alpha *on average over such splits*; a single fixed split can land above it.
+    With fixed_lam (e.g. the KITTI threshold) no calibration happens and only the test draw varies."""
+    G = len(units)
+    miss, kept, lams = [], [], []
+    for _ in range(SPLITS):
+        perm = rng.permutation(G)
+        cal, test = perm[:n_cal], perm[n_cal:]
+        if fixed_lam is None:
+            grid = np.unique(np.quantile(np.concatenate([units[j]["sample"] for j in cal]), np.linspace(0, 1, 2000)))
+            risk = np.mean([_unit_miss(units[j], grid) for j in cal], axis=0)
+            ok = n_cal / (n_cal + 1) * risk + 1 / (n_cal + 1) <= ALPHA
+            lam = float(grid[np.flatnonzero(ok).max()]) if ok.any() else float(grid[0]) - 1.0
+        else:
+            lam = fixed_lam
+        lams.append(lam)
+        miss.append(float(np.mean([_unit_miss(units[j], lam) for j in test])))
+        kept.append(float(np.mean([np.searchsorted(units[j]["all"], lam, side="right") / len(units[j]["all"]) for j in test])))
+    miss, kept = np.array(miss), np.array(kept)
+    return {"n_scenes": G, "n_cal": int(n_cal) if fixed_lam is None else 0, "splits": SPLITS,
+            "miss_mean": float(miss.mean()), "miss_p90": float(np.quantile(miss, 0.9)),
+            "violation_rate": float((miss > ALPHA).mean()), "kept_mean": float(kept.mean())}
+
+
 def methods_for(src, tgt):
     """Scorers trained on the source and on the target, for features present in both."""
     both = {**src, **tgt}
@@ -142,7 +195,8 @@ def run_pair(label, src_dir, tgt_dir, rng):
            "error_rate": {}, "methods": {}}
     per = {"clean": {}, "corrupt": {}}
     per_in = {"clean": {}, "corrupt": {}}
-    for name, f in methods_for(src, tgt).items():
+    methods_for_cache = methods_for(src, tgt)
+    for name, f in methods_for_cache.items():
         res["methods"][name] = {}
         for cond in ("clean", "corrupt"):
             test_src_model = items(tgt, "test", cond, f["src"])
@@ -168,6 +222,26 @@ def run_pair(label, src_dir, tgt_dir, rng):
                   f"zero-shot AUROC {ev_tr['auroc']:.3f} miss {mz:.3f} kept {cz:.3f}", flush=True)
     res["bootstrap_zero_shot"] = {cond: bootstrap(per[cond], test_groups(tgt, cond), rng) for cond in per}
     res["bootstrap_in_domain"] = {cond: bootstrap(per_in[cond], test_groups(tgt, cond), rng) for cond in per_in}
+    # guarantee over random scene-level splits of all non-train target scenes
+    res["splits"] = {}
+    for name, f in methods_for_cache.items():
+        res["splits"][name] = {}
+        for cond in ("clean", "corrupt"):
+            u_tgt = scene_units(tgt, cond, f["tgt"])
+            u_src = scene_units(tgt, cond, f["src"])
+            G = len(u_tgt)
+            n_cal = max(10, G // 2)
+            cal_src = items(src, "calib", cond, f["src"])
+            lam_zero = A.crc_threshold(cal_src, ALPHA, grid_of(cal_src))
+            res["splits"][name][cond] = {
+                "in_domain": split_eval(u_tgt, n_cal, rng),
+                "recalibrated": split_eval(u_src, n_cal, rng),
+                "zero_shot": split_eval(u_src, 0, rng, fixed_lam=lam_zero),
+            }
+            r = res["splits"][name][cond]
+            print(f"[{label}] splits {name:28s} {cond:7s} in-domain miss {r['in_domain']['miss_mean']:.3f} "
+                  f"(viol {r['in_domain']['violation_rate']:.2f}, kept {r['in_domain']['kept_mean']:.3f}) | recal "
+                  f"{r['recalibrated']['miss_mean']:.3f} | zero-shot {r['zero_shot']['miss_mean']:.3f}", flush=True)
     print(f"[{label}] bootstrap:", json.dumps(res["bootstrap_zero_shot"]["clean"])[:1500], flush=True)
     return res
 
@@ -235,6 +309,18 @@ def report(R, path):
                     g = b["auroc_gap_ours_minus_published"]
                     L.append(f"\nAUROC gap, ours minus published combined: {g['ci'][0]:+.3f} to {g['ci'][1]:+.3f} "
                              f"(share of resamples with gap <= 0: {g['p_gap_le_0']:.1%})")
+            sp = r.get("splits")
+            if sp:
+                any_m = next(iter(sp.values()))[cond]
+                L += ["", f"Guarantee over {any_m['in_domain']['splits']} random scene-level splits of the "
+                      f"{any_m['in_domain']['n_scenes']} non-train scenes ({any_m['in_domain']['n_cal']} scenes calibrate, "
+                      "the rest test; calibration unit = scene):", "",
+                      "| method | setting | mean miss | 90th pct miss | P(miss > α) | kept |", "|---|---|---|---|---|---|"]
+                for m, v in sp.items():
+                    for key, lab2 in (("in_domain", "in-domain"), ("recalibrated", "KITTI model, recalibrated"),
+                                      ("zero_shot", "KITTI model + KITTI threshold")):
+                        x = v[cond][key]
+                        L.append(f"| {m} | {lab2} | {x['miss_mean']:.1%} | {x['miss_p90']:.1%} | {x['violation_rate']:.0%} | {x['kept_mean']:.1%} |")
             L.append("")
     open(path, "w").write("\n".join(L))
 
