@@ -51,3 +51,6 @@ python -c "from pixel_trust.middlebury import prepare; prepare('/tmp/mb', scenes
 python run_generate.py --dataset middlebury --root /tmp/mb --out /tmp/mbout --gen telea --depth oracle --baselines stub
 python run_transfer.py --pair "Telea=/tmp/synout,/tmp/mbout" --out /tmp/transfer
 ```
+
+## v5: learned spatial trust head
+`pixel_trust/trust_head.py` replaces the per-pixel tree combiner with a small U-Net over the signal maps (class-balanced BCE on wrong/right pixels, random crops, ~0.5M parameters), so a pixel's trust can use its neighbourhood. A generator-aware variant takes a one-hot generator id as extra channels and is trained on both generators at once. `run_head.py` compares it with the trees and the published signals under identical conformal calibration, on KITTI, Middlebury and KITTI -> Middlebury transfer, with bootstrap intervals over test scenes. It only reads saved features, so the Kaggle notebook `pixel_trust_kaggle_v5_head.ipynb` needs the v2, v3 and v4 notebook outputs as inputs and no generation.
